@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School Safe - Admin Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: white; margin: 0; padding: 20px; }
+        h1 { text-align: center; color: #ff5252; border-bottom: 2px solid #333; padding-bottom: 10px; }
+        .alert-card { background: #1e1e1e; border-left: 5px solid #ff5252; padding: 20px; margin-bottom: 15px; border-radius: 5px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .alert-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .student-name { font-size: 1.5em; font-weight: bold; color: #fff; }
+        .time { color: #888; font-size: 0.9em; }
+        .maps-link { color: #4fc3f7; text-decoration: none; font-weight: bold; }
+        .maps-link:hover { text-decoration: underline; }
+        .btn-container { display: flex; gap: 10px; margin-top: 15px; }
+        button { padding: 10px 20px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1em; flex: 1; transition: 0.2s; }
+        .btn-broadcast { background-color: #d32f2f; color: white; }
+        .btn-broadcast:hover { background-color: #b71c1c; }
+        .btn-resolve { background-color: #388e3c; color: white; }
+        .btn-resolve:hover { background-color: #2e7d32; }
+        #empty-state { text-align: center; color: #888; margin-top: 50px; font-size: 1.2em; }
+        
+        /* New animation for active lockdown cards */
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 82, 82, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(255, 82, 82, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 82, 82, 0); }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🚨 Security Command Center</h1>
+    <div id="alerts-container">
+        <div id="empty-state">No active alerts. System is quiet.</div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getDatabase, ref, onValue, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+        // Your exact Firebase Config
+        const firebaseConfig = {
+            apiKey: "AIzaSyCgkGQTLeSPQAXENul5Iw1ovNIK8PojakA",
+            authDomain: "school-safe-alert.firebaseapp.com",
+            databaseURL: "https://school-safe-alert-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "school-safe-alert",
+            storageBucket: "school-safe-alert.appspot.com",
+            messagingSenderId: "464672366786",
+            appId: "1:464672366786:web:d4c6b4e59923be2ec5db5b"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const alertsRef = ref(db, 'alerts');
+        const container = document.getElementById('alerts-container');
+
+        // Listen for new alerts in real-time
+        onValue(alertsRef, (snapshot) => {
+            const data = snapshot.val();
+            container.innerHTML = ''; // Clear container
+
+            if (data) {
+                // THE FIX: Filter to show BOTH 'pending' and 'broadcasted' alerts
+                const activeAlerts = Object.entries(data).filter(([key, val]) => val.status === 'pending' || val.status === 'broadcasted');
+                
+                if (activeAlerts.length === 0) {
+                    container.innerHTML = '<div id="empty-state">No active alerts. System is quiet.</div>';
+                    return;
+                }
+
+                // Build HTML for each alert
+                activeAlerts.forEach(([key, alert]) => {
+                    // Fixed Google Maps Link
+                    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${alert.coords.latitude},${alert.coords.longitude}`;
+                    const timeString = alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'Just now';
+                    const sender = alert.senderName || "Unknown Student";
+
+                    // Determine if this is a live lockdown
+                    const isLive = alert.status === 'broadcasted';
+                    const borderStyle = isLive ? "border: 3px solid #ff5252; animation: pulse 1.5s infinite;" : "";
+                    const statusText = isLive ? "🚨 ACTIVE LOCKDOWN BROADCASTING" : "Awaiting Verification";
+
+                    const card = document.createElement('div');
+                    card.className = 'alert-card';
+                    card.style.cssText = borderStyle;
+                    card.innerHTML = `
+                        <div class="alert-header">
+                            <span class="student-name">👤 ${sender}</span>
+                            <span class="time">🕒 ${timeString}</span>
+                        </div>
+                        <p><strong>Status:</strong> <span style="color: ${isLive ? '#ff5252' : '#fff'}; font-weight: bold;">${statusText}</span></p>
+                        <p><strong>Location:</strong> <a href="${mapsUrl}" target="_blank" class="maps-link">📍 Open in Google Maps</a></p>
+                        <div class="btn-container">
+                            <button class="btn-resolve" onclick="updateStatus('${key}', 'resolved')">✅ Mark as False Alarm / END LOCKDOWN</button>
+                            ${!isLive ? `<button class="btn-broadcast" onclick="updateStatus('${key}', 'broadcasted')">🚨 BROADCAST LOCKDOWN</button>` : ''}
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            } else {
+                container.innerHTML = '<div id="empty-state">No active alerts. System is quiet.</div>';
+            }
+        });
+
+        // Function to update the database when a button is clicked
+        window.updateStatus = function(alertId, newStatus) {
+            if(newStatus === 'broadcasted' && !confirm("WARNING: This will trigger alarms on all student phones. Proceed?")) return;
+            
+            const updates = {};
+            updates['/alerts/' + alertId + '/status'] = newStatus;
+            update(ref(db), updates);
+        };
+    </script>
+</body>
+</html>
