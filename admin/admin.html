@@ -3,25 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>School Safe - Admin Dashboard</title>
+    <title>School Safe - Command Center</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: white; margin: 0; padding: 20px; }
-        h1 { text-align: center; color: #ff5252; border-bottom: 2px solid #333; padding-bottom: 10px; }
-        .alert-card { background: #1e1e1e; border-left: 5px solid #ff5252; padding: 20px; margin-bottom: 15px; border-radius: 5px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: white; margin: 0; padding: 20px; display: flex; gap: 20px;}
+        h1, h2 { color: #ff5252; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 0; }
+        
+        /* Layout Columns */
+        .col-left { flex: 2; }
+        .col-right { flex: 1; background: #1e1e1e; padding: 20px; border-radius: 5px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); height: fit-content;}
+
+        /* Alert Cards */
+        .alert-card { background: #1e1e1e; border-left: 5px solid #ff5252; padding: 20px; margin-bottom: 15px; border-radius: 5px; }
         .alert-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
         .student-name { font-size: 1.5em; font-weight: bold; color: #fff; }
         .time { color: #888; font-size: 0.9em; }
         .maps-link { color: #4fc3f7; text-decoration: none; font-weight: bold; }
-        .maps-link:hover { text-decoration: underline; }
+        
+        /* Buttons & Inputs */
         .btn-container { display: flex; gap: 10px; margin-top: 15px; }
         button { padding: 10px 20px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 1em; flex: 1; transition: 0.2s; }
         .btn-broadcast { background-color: #d32f2f; color: white; }
         .btn-broadcast:hover { background-color: #b71c1c; }
         .btn-resolve { background-color: #388e3c; color: white; }
-        .btn-resolve:hover { background-color: #2e7d32; }
-        #empty-state { text-align: center; color: #888; margin-top: 50px; font-size: 1.2em; }
         
-        /* New animation for active lockdown cards */
+        .zone-input { width: 100%; padding: 10px; margin-bottom: 10px; border-radius: 5px; border: 1px solid #444; background: #222; color: white; box-sizing: border-box;}
+        .btn-add-zone { background-color: #0288d1; color: white; width: 100%; }
+        
+        /* Zone List */
+        .zone-list { list-style-type: none; padding: 0; margin-top: 20px; }
+        .zone-item { background: #2c2c2c; padding: 10px; margin-bottom: 10px; border-radius: 5px; border-left: 3px solid #0288d1; display: flex; justify-content: space-between; align-items: center;}
+        .btn-delete { background: #d32f2f; padding: 5px 10px; font-size: 0.8em; flex: none; }
+
         @keyframes pulse {
             0% { box-shadow: 0 0 0 0 rgba(255, 82, 82, 0.7); }
             70% { box-shadow: 0 0 0 15px rgba(255, 82, 82, 0); }
@@ -31,16 +43,31 @@
 </head>
 <body>
 
-    <h1>🚨 Security Command Center</h1>
-    <div id="alerts-container">
-        <div id="empty-state">No active alerts. System is quiet.</div>
+    <div class="col-left">
+        <h1>🚨 Active Emergencies</h1>
+        <div id="alerts-container">
+            <div id="empty-state" style="text-align: center; color: #888; margin-top: 50px;">No active alerts. System is quiet.</div>
+        </div>
+    </div>
+
+    <div class="col-right">
+        <h2 style="color: #4fc3f7;">🗺️ Safe Zone Manager</h2>
+        <p style="color: #aaa; font-size: 0.9em; margin-bottom: 20px;">Add coordinates for campus rally points. Phones will dynamically route to these zones.</p>
+        
+        <input type="text" id="z-name" class="zone-input" placeholder="Zone Name (e.g. North Field)">
+        <input type="number" id="z-lat" class="zone-input" placeholder="Latitude (e.g. 13.0827)">
+        <input type="number" id="z-lng" class="zone-input" placeholder="Longitude (e.g. 80.2707)">
+        <button class="btn-add-zone" onclick="addSafeZone()">+ Add to Cloud</button>
+
+        <ul class="zone-list" id="zone-list-container">
+            </ul>
     </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, onValue, update } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+        // IMPORT PUSH AND REMOVE FOR DYNAMIC ZONES
+        import { getDatabase, ref, onValue, update, push, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
-        // Your exact Firebase Config
         const firebaseConfig = {
             apiKey: "AIzaSyCgkGQTLeSPQAXENul5Iw1ovNIK8PojakA",
             authDomain: "school-safe-alert.firebaseapp.com",
@@ -53,16 +80,70 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
+        
+        // ==========================================
+        // 1. SAFE ZONE MANAGER LOGIC
+        // ==========================================
+        const zonesRef = ref(db, 'config/rallyPoints');
+        const zoneListContainer = document.getElementById('zone-list-container');
+
+        // Listen for cloud zones to display on the dashboard
+        onValue(zonesRef, (snapshot) => {
+            zoneListContainer.innerHTML = ''; 
+            const data = snapshot.val();
+            if (data) {
+                Object.entries(data).forEach(([key, zone]) => {
+                    const li = document.createElement('li');
+                    li.className = 'zone-item';
+                    li.innerHTML = `
+                        <div>
+                            <strong>${zone.name}</strong><br>
+                            <span style="font-size: 0.8em; color: #aaa;">Lat: ${zone.lat} | Lng: ${zone.lng}</span>
+                        </div>
+                        <button class="btn-delete" onclick="deleteZone('${key}')">Remove</button>
+                    `;
+                    zoneListContainer.appendChild(li);
+                });
+            } else {
+                zoneListContainer.innerHTML = '<li style="color: #888; font-size: 0.9em;">No zones configured.</li>';
+            }
+        });
+
+        // Add a new zone to Firebase
+        window.addSafeZone = function() {
+            const name = document.getElementById('z-name').value;
+            const lat = parseFloat(document.getElementById('z-lat').value);
+            const lng = parseFloat(document.getElementById('z-lng').value);
+
+            if (!name || isNaN(lat) || isNaN(lng)) {
+                alert("Please fill out all fields correctly.");
+                return;
+            }
+
+            push(zonesRef, { name: name, lat: lat, lng: lng })
+                .then(() => {
+                    document.getElementById('z-name').value = '';
+                    document.getElementById('z-lat').value = '';
+                    document.getElementById('z-lng').value = '';
+                });
+        };
+
+        // Delete a zone from Firebase
+        window.deleteZone = function(key) {
+            remove(ref(db, `config/rallyPoints/${key}`));
+        };
+
+        // ==========================================
+        // 2. EMERGENCY ALERT LOGIC (Same as before)
+        // ==========================================
         const alertsRef = ref(db, 'alerts');
         const container = document.getElementById('alerts-container');
 
-        // Listen for new alerts in real-time
         onValue(alertsRef, (snapshot) => {
             const data = snapshot.val();
-            container.innerHTML = ''; // Clear container
+            container.innerHTML = ''; 
 
             if (data) {
-                // THE FIX: Filter to show BOTH 'pending' and 'broadcasted' alerts
                 const activeAlerts = Object.entries(data).filter(([key, val]) => val.status === 'pending' || val.status === 'broadcasted');
                 
                 if (activeAlerts.length === 0) {
@@ -70,14 +151,10 @@
                     return;
                 }
 
-                // Build HTML for each alert
                 activeAlerts.forEach(([key, alert]) => {
-                    // Fixed Google Maps Link
-                    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${alert.coords.latitude},${alert.coords.longitude}`;
+                    const mapsUrl = `http://maps.google.com/maps?q=${alert.coords.latitude},${alert.coords.longitude}`;
                     const timeString = alert.timestamp ? new Date(alert.timestamp).toLocaleTimeString() : 'Just now';
                     const sender = alert.senderName || "Unknown Student";
-
-                    // Determine if this is a live lockdown
                     const isLive = alert.status === 'broadcasted';
                     const borderStyle = isLive ? "border: 3px solid #ff5252; animation: pulse 1.5s infinite;" : "";
                     const statusText = isLive ? "🚨 ACTIVE LOCKDOWN BROADCASTING" : "Awaiting Verification";
@@ -93,7 +170,7 @@
                         <p><strong>Status:</strong> <span style="color: ${isLive ? '#ff5252' : '#fff'}; font-weight: bold;">${statusText}</span></p>
                         <p><strong>Location:</strong> <a href="${mapsUrl}" target="_blank" class="maps-link">📍 Open in Google Maps</a></p>
                         <div class="btn-container">
-                            <button class="btn-resolve" onclick="updateStatus('${key}', 'resolved')">✅ Mark as False Alarm / END LOCKDOWN</button>
+                            <button class="btn-resolve" onclick="updateStatus('${key}', 'resolved')">✅ Mark as False Alarm</button>
                             ${!isLive ? `<button class="btn-broadcast" onclick="updateStatus('${key}', 'broadcasted')">🚨 BROADCAST LOCKDOWN</button>` : ''}
                         </div>
                     `;
@@ -104,10 +181,8 @@
             }
         });
 
-        // Function to update the database when a button is clicked
         window.updateStatus = function(alertId, newStatus) {
             if(newStatus === 'broadcasted' && !confirm("WARNING: This will trigger alarms on all student phones. Proceed?")) return;
-            
             const updates = {};
             updates['/alerts/' + alertId + '/status'] = newStatus;
             update(ref(db), updates);

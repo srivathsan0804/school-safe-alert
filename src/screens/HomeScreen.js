@@ -5,16 +5,8 @@ import { database } from '../../firebaseConfig';
 import { ref, push, serverTimestamp, onValue } from "firebase/database";
 
 // ==========================================
-// 🧠 1. GEOSPATIAL MATH & RALLY POINTS
+// 🧠 1. GEOSPATIAL MATH & AI SECTOR ASSIGNMENT
 // ==========================================
-
-// Define your Safe Destinations (You will change these to real places near your school!)
-const rallyPoints = [
-  { name: "North Park / Police Station", lat: 13.1000, lng: 80.2700 },
-  { name: "South Stadium Rally Point", lat: 13.0500, lng: 80.2700 },
-  { name: "East Campus Gate", lat: 13.0827, lng: 80.3000 },
-  { name: "West Evacuation Zone", lat: 13.0827, lng: 80.2400 }
-];
 
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
   const R = 6371e3; 
@@ -36,25 +28,26 @@ const getBearing = (startLat, startLng, destLat, destLng) => {
   return (toDeg(Math.atan2(y, x)) + 360) % 360; 
 };
 
-// 🔴 NEW: AI SECTOR ASSIGNMENT LOGIC
-const getBestRallyPoint = (myLat, myLng, threatLat, threatLng) => {
+// 🔴 UPDATED: Now requires the 'availablePoints' passed dynamically from Firebase
+const getBestRallyPoint = (myLat, myLng, threatLat, threatLng, availablePoints) => {
+  if (!availablePoints || availablePoints.length === 0) return null;
+
   let bestPoint = null;
   let shortestDistance = Infinity;
   let distToThreat = calculateDistance(myLat, myLng, threatLat, threatLng);
 
-  rallyPoints.forEach(point => {
+  availablePoints.forEach(point => {
     const distMeToPoint = calculateDistance(myLat, myLng, point.lat, point.lng);
     const distThreatToPoint = calculateDistance(threatLat, threatLng, point.lat, point.lng);
 
-    // Rule 1: If I am the one who pressed the button (Phone A), just route me to the absolute closest safe point.
+    // Rule 1: If I pressed the button, route me to the closest safe point.
     if (distToThreat < 20) {
         if (distMeToPoint < shortestDistance) {
             shortestDistance = distMeToPoint;
             bestPoint = point;
         }
     } 
-    // Rule 2: If I am Phone B, only pick a rally point if the Threat is FURTHER away from it than I am.
-    // This guarantees I never cross paths with the shooter.
+    // Rule 2: If I am a bystander, ensure the Threat is further from the point than I am.
     else if (distThreatToPoint > distMeToPoint) {
       if (distMeToPoint < shortestDistance) {
         shortestDistance = distMeToPoint;
@@ -63,9 +56,9 @@ const getBestRallyPoint = (myLat, myLng, threatLat, threatLng) => {
     }
   });
 
-  // Fallback: If cornered, just go to the point furthest from the threat
+  // Fallback: Head to the point furthest from the threat
   if (!bestPoint) {
-      rallyPoints.forEach(point => {
+      availablePoints.forEach(point => {
         const distThreatToPoint = calculateDistance(threatLat, threatLng, point.lat, point.lng);
         if (distThreatToPoint > shortestDistance || shortestDistance === Infinity) {
             shortestDistance = distThreatToPoint;
@@ -87,10 +80,14 @@ export default function HomeScreen() {
   const [myCoords, setMyCoords] = useState(null);
   const [deviceHeading, setDeviceHeading] = useState(0); 
   const [assignedRallyPoint, setAssignedRallyPoint] = useState(null);
+  
+  // 🔴 NEW STATE: Stores the zones pulled live from Firebase
+  const [cloudRallyPoints, setCloudRallyPoints] = useState([]);
 
   useEffect(() => {
+    // 1. Listen for active alerts
     const alertsRef = ref(database, 'alerts');
-    const unsubscribe = onValue(alertsRef, (snapshot) => {
+    const unsubAlerts = onValue(alertsRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const activeAlert = Object.values(data).find(alert => alert.status === 'broadcasted');
@@ -106,7 +103,22 @@ export default function HomeScreen() {
         setIsLockdown(false);
       }
     });
-    return () => unsubscribe(); 
+
+    // 2. 🔴 Listen for the Cloud Configuration (Safe Zones)
+    const configRef = ref(database, 'config/rallyPoints');
+    const unsubConfig = onValue(configRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setCloudRallyPoints(Object.values(data)); // Convert Firebase object to Array
+      } else {
+        // Ultimate fallback just in case the database is totally empty
+        setCloudRallyPoints([
+          { name: "Default Global Rally Point", lat: 13.0827, lng: 80.2700 }
+        ]);
+      }
+    });
+
+    return () => { unsubAlerts(); unsubConfig(); }; 
   }, []);
 
   useEffect(() => {
@@ -114,13 +126,18 @@ export default function HomeScreen() {
     let headingSubscription;
 
     const startTracking = async () => {
-      if (isLockdown && threatCoords) {
+      // 🔴 Make sure we have the cloud points loaded before doing math!
+      if (isLockdown && threatCoords && cloudRallyPoints.length > 0) {
         locationSubscription = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 1 },
           (loc) => {
             setMyCoords(loc.coords);
-            // Dynamically assign the best sector/rally point based on live movement
-            const bestPoint = getBestRallyPoint(loc.coords.latitude, loc.coords.longitude, threatCoords.latitude, threatCoords.longitude);
+            // Pass the cloud array into our math function
+            const bestPoint = getBestRallyPoint(
+                loc.coords.latitude, loc.coords.longitude, 
+                threatCoords.latitude, threatCoords.longitude, 
+                cloudRallyPoints
+            );
             setAssignedRallyPoint(bestPoint);
           }
         );
@@ -137,7 +154,7 @@ export default function HomeScreen() {
       if (locationSubscription) locationSubscription.remove();
       if (headingSubscription) headingSubscription.remove();
     };
-  }, [isLockdown, threatCoords]);
+  }, [isLockdown, threatCoords, cloudRallyPoints]); // Added cloudRallyPoints as a dependency
 
   const handlePress = async () => {
     if (studentName.trim() === '') return Alert.alert("Wait!", "Enter your name.");
@@ -150,7 +167,6 @@ export default function HomeScreen() {
       push(ref(database, 'alerts'), {
         type: "PANIC_BUTTON_PRESSED",
         senderName: studentName,
-        // Using TRUE raw coordinates for the 2-phone test!
         coords: { latitude: location.coords.latitude, longitude: location.coords.longitude },
         timestamp: serverTimestamp(),
         status: "pending" 
